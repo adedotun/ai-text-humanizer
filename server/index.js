@@ -644,7 +644,74 @@ async function customHumanize(text, intensity = 'medium') {
   // Clean up any double spaces
   humanized = humanized.replace(/\s+/g, ' ').trim();
   
+  // Restore preserved terms
+  Object.keys(placeholderMap).forEach(placeholder => {
+    humanized = humanized.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), placeholderMap[placeholder]);
+  });
+  
   return humanized;
+}
+
+// Extract terms that should be preserved (technical terms, proper nouns, etc.)
+function extractPreservedTerms(text) {
+  const preserved = new Set();
+  
+  // Extract proper nouns (capitalized words, excluding sentence starts)
+  const words = text.split(/\s+/);
+  
+  // Find capitalized words that aren't at sentence starts
+  words.forEach((word, index) => {
+    const cleanWord = word.replace(/[^\w]/g, '');
+    // Check if it's a proper noun (capitalized, not at sentence start, length > 1)
+    if (cleanWord.length > 1 && cleanWord[0] === cleanWord[0].toUpperCase() && 
+        cleanWord[0] !== cleanWord[0].toLowerCase()) {
+      // Check if previous word ends sentence
+      const prevWord = index > 0 ? words[index - 1] : '';
+      const isSentenceStart = prevWord.match(/[.!?]$/) || index === 0;
+      
+      if (!isSentenceStart && cleanWord.length > 2) {
+        preserved.add(cleanWord);
+      }
+    }
+  });
+  
+  // Extract technical terms (common patterns)
+  const technicalPatterns = [
+    /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Algorithm|Method|System|Framework|Library|API|SDK|Protocol|Standard|Model|Architecture|Pattern|Design|Principle)\b/gi,
+    /\b(?:HTTP|HTTPS|API|REST|JSON|XML|SQL|NoSQL|AI|ML|DL|NLP|CV|GPU|CPU|RAM|SSD|HDD|IDE|CLI|GUI|UI|UX|CSS|HTML|JS|TS|PHP|Python|Java|C\+\+|Go|Rust|Swift|Kotlin)\b/gi,
+    /\b\d+\.\d+(?:\.\d+)?\s*(?:GHz|MHz|GB|MB|TB|KB|ms|s|min|hr)\b/gi,
+    /\b(?:Dual-Pivot|Quick|Merge|Heap|Bubble|Insertion|Selection)\s+(?:Sort|Algorithm)\b/gi,
+    /\b(?:DevSecOps|DevOps|Agile|Scrum|Kanban|CI\/CD)\b/gi,
+    /\b(?:Master|Bachelor|Doctorate|PhD|MSc|BSc|BS|MS|MA|BA)\s+(?:of|in)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/gi,
+    /\b(?:University|College|Institute|School)\s+of\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/gi
+  ];
+  
+  technicalPatterns.forEach(pattern => {
+    const matches = text.match(pattern);
+    if (matches) {
+      matches.forEach(match => {
+        // Extract individual words from the match
+        match.split(/\s+/).forEach(word => {
+          const clean = word.replace(/[^\w-]/g, '');
+          if (clean.length > 2) {
+            preserved.add(clean);
+          }
+        });
+      });
+    }
+  });
+  
+  // Extract acronyms (all caps, 2+ characters)
+  const acronyms = text.match(/\b[A-Z]{2,}\b/g);
+  if (acronyms) {
+    acronyms.forEach(acronym => {
+      if (acronym.length >= 2 && acronym.length <= 10) {
+        preserved.add(acronym);
+      }
+    });
+  }
+  
+  return Array.from(preserved);
 }
 
 // Post-process humanized text to ensure quality
