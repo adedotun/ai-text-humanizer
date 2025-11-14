@@ -47,10 +47,18 @@ app.post('/api/humanize', async (req, res) => {
     const originalAnalysis = getAIAnalysis(text, originalAIScore);
     
     // Humanize the text
-    const humanizedText = await humanizeText(text, intensity);
+    let humanizedText = await humanizeText(text, intensity);
     
     // Detect AI in humanized text
-    const humanizedAIScore = detectAIPatterns(humanizedText);
+    let humanizedAIScore = detectAIPatterns(humanizedText);
+    
+    // If humanization didn't improve the score significantly, apply additional passes
+    if (humanizedAIScore >= originalAIScore - 0.1 && intensity !== 'low') {
+      // Apply an additional pass of humanization for better results
+      humanizedText = await applyAdditionalHumanization(humanizedText, intensity);
+      humanizedAIScore = detectAIPatterns(humanizedText);
+    }
+    
     const humanizedAnalysis = getAIAnalysis(humanizedText, humanizedAIScore);
     
     res.json({
@@ -256,7 +264,53 @@ function detectAIPatterns(text) {
   // Check for contractions (humans use more)
   const contractions = (text.match(/\b(n't|'m|'re|'ve|'ll|'d|'s)\b/gi) || []).length;
   if (contractions > 0) {
-    score -= 0.1;
+    score -= 0.15; // Increased weight for contractions
+  }
+  
+  // Check for casual language patterns (humans use more)
+  const casualPatterns = [
+    /\b(also|plus|and|but|so|though|still|well|anyway|like|you know|I mean)\b/gi,
+    /\b(think|feel|believe|know|see|get|make|do|go|come|want|need|try|use)\b/gi,
+    /\b(that's|it's|what's|there's|here's|how's|who's|where's)\b/gi,
+    /\b(actually|really|basically|pretty much|kind of|sort of)\b/gi,
+    /\b(don't|can't|won't|isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't)\b/gi
+  ];
+  let casualCount = 0;
+  casualPatterns.forEach(pattern => {
+    const matches = text.match(pattern);
+    if (matches) casualCount += matches.length;
+  });
+  const casualRatio = words.length > 0 ? casualCount / words.length : 0;
+  if (casualRatio > 0.08) {
+    score -= 0.15; // High casual language usage suggests human (increased weight)
+  } else if (casualRatio > 0.05) {
+    score -= 0.08; // Moderate casual language
+  }
+  
+  // Check for sentence fragments or incomplete thoughts (more human)
+  const sentenceFragments = (text.match(/\.\s+[A-Z][a-z]+\s+[a-z]/g) || []).length;
+  if (sentenceFragments > 0) {
+    score -= 0.08; // Sentence fragments can indicate human writing (increased weight)
+  }
+  
+  // Check for informal connectors and fillers
+  const informalFillers = (text.match(/\b(well|so|anyway|like|you know|I mean|actually|really)\b/gi) || []).length;
+  if (informalFillers > 0) {
+    score -= 0.1; // Informal fillers strongly suggest human writing
+  }
+  
+  // Check for varied sentence starters (humans vary more)
+  const sentenceStarters = [];
+  sentences.forEach(sentence => {
+    const firstWord = sentence.trim().split(/\s+/)[0];
+    if (firstWord) {
+      sentenceStarters.push(firstWord.toLowerCase());
+    }
+  });
+  const uniqueStarters = new Set(sentenceStarters);
+  const starterVariety = sentenceStarters.length > 0 ? uniqueStarters.size / sentenceStarters.length : 0;
+  if (starterVariety > 0.7) {
+    score -= 0.08; // High variety in sentence starters suggests human
   }
   
   // Normalize score between 0 and 1
@@ -396,13 +450,34 @@ async function humanizeText(text, intensity = 'medium') {
   return await customHumanize(text, intensity);
 }
 
-// Custom humanization logic (fallback)
+// Custom humanization logic (fallback) - Improved version
 async function customHumanize(text, intensity = 'medium') {
   // Intensity levels: low, medium, high
   const intensityMap = {
-    low: { sentenceVariation: 0.15, wordVariation: 0.2, addPersonality: false, contractionRate: 0.3 },
-    medium: { sentenceVariation: 0.3, wordVariation: 0.4, addPersonality: true, contractionRate: 0.5 },
-    high: { sentenceVariation: 0.5, wordVariation: 0.6, addPersonality: true, contractionRate: 0.7 }
+    low: { 
+      sentenceVariation: 0.2, 
+      wordVariation: 0.3, 
+      addPersonality: false, 
+      contractionRate: 0.4,
+      replacementRate: 0.6,
+      addCasualWords: 0.2
+    },
+    medium: { 
+      sentenceVariation: 0.4, 
+      wordVariation: 0.5, 
+      addPersonality: true, 
+      contractionRate: 0.6,
+      replacementRate: 0.8,
+      addCasualWords: 0.4
+    },
+    high: { 
+      sentenceVariation: 0.6, 
+      wordVariation: 0.7, 
+      addPersonality: true, 
+      contractionRate: 0.8,
+      replacementRate: 0.95,
+      addCasualWords: 0.6
+    }
   };
   
   const config = intensityMap[intensity] || intensityMap.medium;
@@ -493,6 +568,7 @@ async function customHumanize(text, intensity = 'medium') {
     // Personal statement phrases
     'fascination with': ['love for', 'interest in', 'passion for'],
     'fueled my ambition': ['drove me', 'motivated me', 'pushed me'],
+    'master the intersection of': ['work at the intersection of', 'combine', 'bring together'],
     'master the intersection': ['work at the intersection', 'combine', 'bring together'],
     'specialize in': ['focus on', 'work in', 'concentrate on'],
     'pursue a career as': ['become', 'work as', 'aim to be']
@@ -501,14 +577,21 @@ async function customHumanize(text, intensity = 'medium') {
   // Apply replacements (process longer phrases first to avoid partial matches)
   const sortedReplacements = Object.keys(replacements).sort((a, b) => b.length - a.length);
   
+  // Apply replacements more aggressively and consistently
   sortedReplacements.forEach(formal => {
     const regex = new RegExp(`\\b${formal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
     const alternatives = replacements[formal];
-    humanized = humanized.replace(regex, (match) => {
-      // Apply replacement based on intensity (higher intensity = more likely to replace)
-      const replaceProbability = intensity === 'high' ? 0.9 : intensity === 'medium' ? 0.7 : 0.5;
-      if (Math.random() < replaceProbability) {
-        const randomAlt = alternatives[Math.floor(Math.random() * alternatives.length)];
+    let replacementCount = 0;
+    
+    humanized = humanized.replace(regex, (match, offset) => {
+      // More aggressive replacement - always replace if intensity is high, otherwise use probability
+      const shouldReplace = intensity === 'high' || Math.random() < config.replacementRate;
+      
+      if (shouldReplace) {
+        replacementCount++;
+        // Use deterministic selection based on position for consistency
+        const altIndex = (offset + replacementCount) % alternatives.length;
+        const randomAlt = alternatives[altIndex];
         return match[0] === match[0].toUpperCase() 
           ? randomAlt.charAt(0).toUpperCase() + randomAlt.slice(1)
           : randomAlt;
@@ -517,42 +600,84 @@ async function customHumanize(text, intensity = 'medium') {
     });
   });
   
-  // Add contractions for more natural language
-  if (Math.random() < config.contractionRate) {
-    const contractions = [
-      { pattern: /\bit is\b/gi, replacement: "it's" },
-      { pattern: /\bI am\b/g, replacement: "I'm" },
-      { pattern: /\bI have\b/g, replacement: "I've" },
-      { pattern: /\bI will\b/g, replacement: "I'll" },
-      { pattern: /\bI would\b/g, replacement: "I'd" },
-      { pattern: /\byou are\b/gi, replacement: "you're" },
-      { pattern: /\bwe are\b/gi, replacement: "we're" },
-      { pattern: /\bthey are\b/gi, replacement: "they're" },
-      { pattern: /\bit has\b/gi, replacement: "it's" },
-      { pattern: /\bthat is\b/gi, replacement: "that's" },
-      { pattern: /\bthere is\b/gi, replacement: "there's" },
-      { pattern: /\bhere is\b/gi, replacement: "here's" },
-      { pattern: /\bwhat is\b/gi, replacement: "what's" },
-      { pattern: /\bwho is\b/gi, replacement: "who's" },
-      { pattern: /\bwhere is\b/gi, replacement: "where's" },
-      { pattern: /\bhow is\b/gi, replacement: "how's" },
-      { pattern: /\bdo not\b/gi, replacement: "don't" },
-      { pattern: /\bdoes not\b/gi, replacement: "doesn't" },
-      { pattern: /\bdid not\b/gi, replacement: "didn't" },
-      { pattern: /\bwill not\b/gi, replacement: "won't" },
-      { pattern: /\bwould not\b/gi, replacement: "wouldn't" },
-      { pattern: /\bcannot\b/gi, replacement: "can't" },
-      { pattern: /\bcould not\b/gi, replacement: "couldn't" },
-      { pattern: /\bshould not\b/gi, replacement: "shouldn't" },
-      { pattern: /\bmust not\b/gi, replacement: "mustn't" }
+  // Add casual filler words and connectors (makes text more human)
+  if (Math.random() < config.addCasualWords) {
+    const casualAdditions = [
+      { pattern: /\b(and|but|so)\s+([a-z])/gi, insert: ['you know', 'like', 'I mean'] },
+      { pattern: /\b(\.)\s+([A-Z])/g, insert: ['Well,', 'So,', 'Anyway,'] }
     ];
     
-    contractions.forEach(({ pattern, replacement }) => {
-      if (Math.random() < config.contractionRate) {
-        humanized = humanized.replace(pattern, replacement);
+    casualAdditions.forEach(({ pattern, insert }) => {
+      if (Math.random() < config.addCasualWords * 0.3) {
+        humanized = humanized.replace(pattern, (match, p1, p2) => {
+          const casual = insert[Math.floor(Math.random() * insert.length)];
+          return p1 === '.' ? `${p1} ${casual} ${p2}` : `${p1} ${casual}, ${p2}`;
+        });
       }
     });
   }
+  
+  // Add contractions for more natural language (more aggressive and consistent)
+  const contractions = [
+    { pattern: /\bit is\b/gi, replacement: "it's" },
+    { pattern: /\bI am\b/g, replacement: "I'm" },
+    { pattern: /\bI have\b/g, replacement: "I've" },
+    { pattern: /\bI will\b/g, replacement: "I'll" },
+    { pattern: /\bI would\b/g, replacement: "I'd" },
+    { pattern: /\byou are\b/gi, replacement: "you're" },
+    { pattern: /\bwe are\b/gi, replacement: "we're" },
+    { pattern: /\bthey are\b/gi, replacement: "they're" },
+    { pattern: /\bit has\b/gi, replacement: "it's" },
+    { pattern: /\bthat is\b/gi, replacement: "that's" },
+    { pattern: /\bthere is\b/gi, replacement: "there's" },
+    { pattern: /\bhere is\b/gi, replacement: "here's" },
+    { pattern: /\bwhat is\b/gi, replacement: "what's" },
+    { pattern: /\bwho is\b/gi, replacement: "who's" },
+    { pattern: /\bwhere is\b/gi, replacement: "where's" },
+    { pattern: /\bhow is\b/gi, replacement: "how's" },
+    { pattern: /\bdo not\b/gi, replacement: "don't" },
+    { pattern: /\bdoes not\b/gi, replacement: "doesn't" },
+    { pattern: /\bdid not\b/gi, replacement: "didn't" },
+    { pattern: /\bwill not\b/gi, replacement: "won't" },
+    { pattern: /\bwould not\b/gi, replacement: "wouldn't" },
+    { pattern: /\bcannot\b/gi, replacement: "can't" },
+    { pattern: /\bcould not\b/gi, replacement: "couldn't" },
+    { pattern: /\bshould not\b/gi, replacement: "shouldn't" },
+    { pattern: /\bmust not\b/gi, replacement: "mustn't" }
+  ];
+  
+  // Apply contractions more consistently based on intensity
+  contractions.forEach(({ pattern, replacement }) => {
+    humanized = humanized.replace(pattern, (match) => {
+      // Higher intensity = more contractions, but always apply some
+      if (intensity === 'high' || Math.random() < config.contractionRate) {
+        return replacement;
+      }
+      return match;
+    });
+  });
+  
+  // Add more casual language patterns
+  const casualReplacements = {
+    'has been': "hasn't been",
+    'is not': "isn't",
+    'are not': "aren't",
+    'was not': "wasn't",
+    'were not': "weren't",
+    'have not': "haven't",
+    'has not': "hasn't",
+    'had not': "hadn't"
+  };
+  
+  Object.keys(casualReplacements).forEach(formal => {
+    const regex = new RegExp(`\\b${formal}\\b`, 'gi');
+    humanized = humanized.replace(regex, (match) => {
+      if (Math.random() < config.contractionRate * 0.7) {
+        return casualReplacements[formal];
+      }
+      return match;
+    });
+  });
   
   // Vary sentence lengths more aggressively
   const sentences = humanized.split(/([.!?]+)/);
@@ -565,14 +690,17 @@ async function customHumanize(text, intensity = 'medium') {
     if (sentence && sentence.trim().length > 0) {
       const trimmedSentence = sentence.trim();
       
-      // Break long sentences more aggressively
+      // Break long sentences more aggressively (but avoid breaking in the middle of phrases)
       if (trimmedSentence.length > 100 && Math.random() < config.sentenceVariation) {
-        // Find a good break point (after a comma or conjunction)
+        // Find a good break point (after a comma, conjunction, or preposition)
         const breakPoints = [
           trimmedSentence.lastIndexOf(', ', Math.floor(trimmedSentence.length * 0.6)),
           trimmedSentence.lastIndexOf(' and ', Math.floor(trimmedSentence.length * 0.6)),
           trimmedSentence.lastIndexOf(' but ', Math.floor(trimmedSentence.length * 0.6)),
           trimmedSentence.lastIndexOf(' or ', Math.floor(trimmedSentence.length * 0.6)),
+          trimmedSentence.lastIndexOf(' from ', Math.floor(trimmedSentence.length * 0.6)),
+          trimmedSentence.lastIndexOf(' to ', Math.floor(trimmedSentence.length * 0.6)),
+          trimmedSentence.lastIndexOf(' with ', Math.floor(trimmedSentence.length * 0.6)),
           trimmedSentence.lastIndexOf(' ', Math.floor(trimmedSentence.length * 0.5))
         ].filter(idx => idx > 20);
         
@@ -580,8 +708,22 @@ async function customHumanize(text, intensity = 'medium') {
           const breakPoint = Math.max(...breakPoints);
           const firstPart = trimmedSentence.substring(0, breakPoint);
           const secondPart = trimmedSentence.substring(breakPoint + 1).trim();
-          variedSentences.push(firstPart + '.');
-          variedSentences.push(secondPart.charAt(0).toUpperCase() + secondPart.slice(1) + punctuation);
+          
+          // Don't break if second part starts with a capitalized word that's likely a proper noun
+          // unless it's a common word like "The", "This", etc.
+          const secondWord = secondPart.split(/\s+/)[0];
+          const isLikelyProperNoun = secondWord && 
+            secondWord[0] === secondWord[0].toUpperCase() && 
+            secondWord.length > 3 &&
+            !secondWord.match(/^(The|This|That|These|Those|I|We|You|He|She|It|They|From|To|With|And|But|Or)$/);
+          
+          if (isLikelyProperNoun && breakPoint < trimmedSentence.length * 0.4) {
+            // Too early in sentence and looks like proper noun, don't break
+            variedSentences.push(trimmedSentence + punctuation);
+          } else {
+            variedSentences.push(firstPart + '.');
+            variedSentences.push(secondPart.charAt(0).toUpperCase() + secondPart.slice(1) + punctuation);
+          }
         } else {
           variedSentences.push(trimmedSentence + punctuation);
         }
@@ -597,8 +739,8 @@ async function customHumanize(text, intensity = 'medium') {
   
   humanized = variedSentences.join(' ');
   
-  // Add some personality if enabled
-  if (config.addPersonality && Math.random() < 0.4) {
+  // Add some personality if enabled (more aggressive)
+  if (config.addPersonality) {
     const personalityPhrases = [
       'I think',
       'In my experience',
@@ -607,19 +749,72 @@ async function customHumanize(text, intensity = 'medium') {
       'I\'ve noticed',
       'For me',
       'I found that',
-      'What I learned is'
+      'What I learned is',
+      'I believe',
+      'I feel',
+      'I\'ve found',
+      'In my opinion',
+      'To me'
     ];
     
-    const firstSentence = humanized.split(/[.!?]/)[0];
-    if (firstSentence && firstSentence.length > 20 && !firstSentence.toLowerCase().includes('i ')) {
-      const randomPhrase = personalityPhrases[Math.floor(Math.random() * personalityPhrases.length)];
-      humanized = randomPhrase + ', ' + humanized.charAt(0).toLowerCase() + humanized.slice(1);
+    const sentences = humanized.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    if (sentences.length > 0) {
+      const firstSentence = sentences[0];
+      // Add personality to first sentence if it doesn't already have personal voice
+      if (firstSentence && firstSentence.length > 15 && 
+          !firstSentence.toLowerCase().match(/\b(i|my|me|personally|i've|i'm|i'll)\b/)) {
+        const randomPhrase = personalityPhrases[Math.floor(Math.random() * personalityPhrases.length)];
+        humanized = humanized.replace(
+          new RegExp(`^${firstSentence.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i'),
+          randomPhrase + ', ' + firstSentence.charAt(0).toLowerCase() + firstSentence.slice(1)
+        );
+      }
+      
+      // Occasionally add personality to middle sentences too (for high intensity)
+      if (intensity === 'high' && sentences.length > 2 && Math.random() < 0.3) {
+        const midSentenceIndex = Math.floor(sentences.length / 2);
+        const midSentence = sentences[midSentenceIndex];
+        if (midSentence && midSentence.length > 20) {
+          const casualPhrases = ['I think', 'I believe', 'For me', 'Personally'];
+          const casualPhrase = casualPhrases[Math.floor(Math.random() * casualPhrases.length)];
+          humanized = humanized.replace(
+            new RegExp(`\\b${midSentence.trim().substring(0, 10).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?`, 'i'),
+            (match) => casualPhrase + ', ' + match.toLowerCase()
+          );
+        }
+      }
     }
   }
   
-  // Replace passive voice patterns with active voice where possible
+  // Add more conversational elements
+  const conversationalPatterns = [
+    { pattern: /\b(actually|really|basically|pretty much|kind of|sort of)\b/gi, add: true },
+    { pattern: /\b(you know|I mean|like|well|so|anyway)\b/gi, add: false } // Don't add if already present
+  ];
+  
+  if (Math.random() < config.addCasualWords) {
+    conversationalPatterns.forEach(({ pattern, add }) => {
+      const hasPattern = pattern.test(humanized);
+      if (add && !hasPattern && Math.random() < 0.2) {
+        // Add conversational filler occasionally
+        const fillers = ['actually', 'really', 'basically', 'you know'];
+        const filler = fillers[Math.floor(Math.random() * fillers.length)];
+        const sentences = humanized.split(/([.!?]+)/);
+        if (sentences.length > 2) {
+          const insertIndex = Math.floor(sentences.length / 3);
+          if (sentences[insertIndex * 2]) {
+            sentences[insertIndex * 2] = filler + ', ' + sentences[insertIndex * 2].trim();
+            humanized = sentences.join('');
+          }
+        }
+      }
+    });
+  }
+  
+  // Replace passive voice patterns with active voice where possible (more aggressive)
   const passivePatterns = [
-    { pattern: /\bwas (analyzed|examined|investigated|implemented|utilized|demonstrated)\b/gi, 
+    { 
+      pattern: /\bwas (analyzed|examined|investigated|implemented|utilized|demonstrated|studied|tested|evaluated|reviewed)\b/gi, 
       replacement: (match) => {
         const verb = match.split(' ')[1];
         const activeForms = {
@@ -628,18 +823,79 @@ async function customHumanize(text, intensity = 'medium') {
           'investigated': 'I investigated',
           'implemented': 'I implemented',
           'utilized': 'I used',
-          'demonstrated': 'I showed'
+          'demonstrated': 'I showed',
+          'studied': 'I studied',
+          'tested': 'I tested',
+          'evaluated': 'I evaluated',
+          'reviewed': 'I reviewed'
         };
         return activeForms[verb] || match;
+      }
+    },
+    {
+      pattern: /\bis (designed|created|developed|built|constructed|formed)\b/gi,
+      replacement: (match) => {
+        const verb = match.split(' ')[1];
+        return `I ${verb}`;
+      }
+    },
+    {
+      pattern: /\bcan be (seen|observed|noted|found|identified)\b/gi,
+      replacement: (match) => {
+        const verb = match.split(' ')[2];
+        const replacements = {
+          'seen': "you can see",
+          'observed': "I noticed",
+          'noted': "I found",
+          'found': "I found",
+          'identified': "I identified"
+        };
+        return replacements[verb] || match;
       }
     }
   ];
   
-  if (Math.random() < config.wordVariation * 0.5) {
-    passivePatterns.forEach(({ pattern, replacement }) => {
+  // Apply passive to active conversion more consistently
+  passivePatterns.forEach(({ pattern, replacement }) => {
+    if (Math.random() < config.wordVariation) {
       humanized = humanized.replace(pattern, replacement);
+    }
+  });
+  
+  // Add more variety with synonyms for common formal words
+  const commonWordReplacements = {
+    'very': ['really', 'pretty', 'quite', 'super'],
+    'extremely': ['really', 'super', 'incredibly'],
+    'significantly': ['a lot', 'much', 'really'],
+    'substantially': ['a lot', 'much'],
+    'considerably': ['quite a bit', 'a lot'],
+    'notably': ['especially', 'particularly'],
+    'particularly': ['especially', 'really'],
+    'essentially': ['basically', 'pretty much'],
+    'primarily': ['mainly', 'mostly'],
+    'subsequently': ['then', 'after that', 'next'],
+    'previously': ['before', 'earlier'],
+    'currently': ['right now', 'now', 'at the moment'],
+    'frequently': ['often', 'a lot'],
+    'occasionally': ['sometimes', 'now and then'],
+    'approximately': ['about', 'around', 'roughly'],
+    'numerous': ['many', 'a lot of', 'tons of'],
+    'various': ['different', 'all kinds of']
+  };
+  
+  Object.keys(commonWordReplacements).forEach(formal => {
+    const regex = new RegExp(`\\b${formal}\\b`, 'gi');
+    const alternatives = commonWordReplacements[formal];
+    humanized = humanized.replace(regex, (match) => {
+      if (Math.random() < config.wordVariation * 0.6) {
+        const alt = alternatives[Math.floor(Math.random() * alternatives.length)];
+        return match[0] === match[0].toUpperCase() 
+          ? alt.charAt(0).toUpperCase() + alt.slice(1)
+          : alt;
+      }
+      return match;
     });
-  }
+  });
   
   // Clean up any double spaces
   humanized = humanized.replace(/\s+/g, ' ').trim();
@@ -650,6 +906,59 @@ async function customHumanize(text, intensity = 'medium') {
   });
   
   return humanized;
+}
+
+// Apply additional humanization pass for better results
+async function applyAdditionalHumanization(text, intensity) {
+  let improved = text;
+  
+  // More aggressive casual word additions
+  const casualInserts = [
+    { pattern: /\b(and|but|so)\s+([a-z])/gi, insert: ['you know', 'like', 'I mean'] },
+    { pattern: /\b(\.)\s+([A-Z])/g, insert: ['Well,', 'So,', 'Anyway,'] }
+  ];
+  
+  casualInserts.forEach(({ pattern, insert }) => {
+    if (Math.random() < 0.4) {
+      improved = improved.replace(pattern, (match, p1, p2) => {
+        const casual = insert[Math.floor(Math.random() * insert.length)];
+        return p1 === '.' ? `${p1} ${casual} ${p2}` : `${p1} ${casual}, ${p2}`;
+      });
+    }
+  });
+  
+  // Add more contractions
+  const extraContractions = [
+    { pattern: /\bhas been\b/gi, replacement: "hasn't been" },
+    { pattern: /\bis not\b/gi, replacement: "isn't" },
+    { pattern: /\bare not\b/gi, replacement: "aren't" }
+  ];
+  
+  extraContractions.forEach(({ pattern, replacement }) => {
+    improved = improved.replace(pattern, replacement);
+  });
+  
+  // Replace more formal words
+  const extraReplacements = {
+    'very': 'really',
+    'extremely': 'super',
+    'significantly': 'a lot',
+    'approximately': 'about',
+    'numerous': 'many',
+    'various': 'different'
+  };
+  
+  Object.keys(extraReplacements).forEach(formal => {
+    const regex = new RegExp(`\\b${formal}\\b`, 'gi');
+    improved = improved.replace(regex, (match) => {
+      const replacement = extraReplacements[formal];
+      return match[0] === match[0].toUpperCase() 
+        ? replacement.charAt(0).toUpperCase() + replacement.slice(1)
+        : replacement;
+    });
+  });
+  
+  return improved;
 }
 
 // Extract terms that should be preserved (technical terms, proper nouns, etc.)
@@ -718,6 +1027,19 @@ function extractPreservedTerms(text) {
 function postProcessHumanized(text, intensity) {
   let processed = text;
   
+  // Fix common formatting issues first
+  // Remove periods before capitalized words (unless it's an abbreviation)
+  processed = processed.replace(/\.\s+([A-Z][a-z]+)/g, (match, word) => {
+    // Don't fix if it's a proper noun or abbreviation
+    if (word.length <= 3 || word.match(/^(The|This|That|These|Those|I|We|You|He|She|It|They)$/)) {
+      return match; // Keep as is
+    }
+    return ' ' + word; // Remove the period
+  });
+  
+  // Fix "combine of" -> "combine" or "bring together"
+  processed = processed.replace(/\bcombine\s+of\b/gi, 'combine');
+  
   // Ensure proper sentence capitalization
   const sentences = processed.split(/([.!?]+)/);
   let fixedSentences = [];
@@ -728,15 +1050,22 @@ function postProcessHumanized(text, intensity) {
     
     if (sentence && sentence.trim().length > 0) {
       const trimmed = sentence.trim();
-      const capitalized = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+      // Only capitalize if it's not already capitalized (preserve proper nouns)
+      const capitalized = trimmed.charAt(0) === trimmed.charAt(0).toUpperCase() && 
+                          trimmed.charAt(0) !== trimmed.charAt(0).toLowerCase()
+        ? trimmed 
+        : trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
       fixedSentences.push(capitalized + punctuation);
     }
   }
   
   processed = fixedSentences.join(' ');
   
-  // Clean up spacing
+  // Clean up spacing and fix double punctuation
   processed = processed.replace(/\s+/g, ' ').trim();
+  processed = processed.replace(/\.\s*\./g, '.'); // Remove double periods
+  processed = processed.replace(/\s+([.!?,:;])/g, '$1'); // Remove space before punctuation (but keep after)
+  processed = processed.replace(/([.!?])\s*([a-z])/g, '$1 $2'); // Ensure space after sentence end
   
   return processed;
 }
