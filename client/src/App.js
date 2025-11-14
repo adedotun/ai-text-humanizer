@@ -365,7 +365,10 @@ function App() {
                         <div className="score-value">
                           {(result.data.humanizedAI.aiScore * 100).toFixed(0)}%
                         </div>
-                        <div className="score-label" style={{ fontSize: '0.75rem' }}>
+                        <div className="score-label" style={{ fontSize: '0.7rem', marginTop: '5px' }}>
+                          AI Likelihood
+                        </div>
+                        <div className="score-label" style={{ fontSize: '0.75rem', marginTop: '2px', fontWeight: 'bold' }}>
                           {getAIScoreLabel(result.data.humanizedAI.aiScore)}
                         </div>
                       </div>
@@ -493,7 +496,10 @@ function App() {
                         <div className="score-value">
                           {(result.data.aiScore * 100).toFixed(0)}%
                         </div>
-                        <div className="score-label" style={{ fontSize: '0.75rem' }}>
+                        <div className="score-label" style={{ fontSize: '0.7rem', marginTop: '5px' }}>
+                          AI Likelihood
+                        </div>
+                        <div className="score-label" style={{ fontSize: '0.75rem', marginTop: '2px', fontWeight: 'bold' }}>
                           {getAIScoreLabel(result.data.aiScore)}
                         </div>
                       </div>
@@ -513,7 +519,10 @@ function App() {
                         <div className="score-value">
                           {(result.data.humanizedAI.aiScore * 100).toFixed(0)}%
                         </div>
-                        <div className="score-label" style={{ fontSize: '0.75rem' }}>
+                        <div className="score-label" style={{ fontSize: '0.7rem', marginTop: '5px' }}>
+                          AI Likelihood
+                        </div>
+                        <div className="score-label" style={{ fontSize: '0.75rem', marginTop: '2px', fontWeight: 'bold' }}>
                           {getAIScoreLabel(result.data.humanizedAI.aiScore)}
                         </div>
                       </div>
