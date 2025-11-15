@@ -6,7 +6,15 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+// CORS configuration - allow all origins in production, localhost in development
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'production' 
+    ? true // Allow all origins in production
+    : ['http://localhost:3000', 'http://localhost:3001'],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // AI Detection endpoint
